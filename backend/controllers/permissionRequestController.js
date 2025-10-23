@@ -1,0 +1,1048 @@
+import { PrismaClient } from '@prisma/client';
+import {
+  sendPermissionRequestCreatedNotification,
+  sendPermissionRequestStatusNotification,
+  sendManagerNotification,
+  sendHRNotification
+} from '../utils/emailUtils.js';
+import { uploadFileToR2 } from '../services/cloudflareR2Service.js';
+
+const prisma = new PrismaClient();
+
+// Obtener todas las solicitudes de permiso
+export const getAllPermissionRequests = async (req, res) => {
+  try {
+    const { status, sectorId, userId } = req.query;
+    
+    // Verificar autorización
+    if (req.userRole !== 'HR' && req.userRole !== 'MANAGER') {
+      // Si el usuario no es HR o MANAGER, solo puede ver sus propias solicitudes
+      const permissionRequests = await prisma.permissionRequest.findMany({
+        where: {
+          userId: req.userId
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            }
+          },
+          sector: {
+            select: {
+              id: true,
+              name: true,
+              manager: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true
+                }
+              }
+            }
+          },
+          type: {
+            select: {
+              id: true,
+              name: true,
+            }
+          },
+          attachments: true
+        },
+        orderBy: {
+          createdAt: 'desc'
+        }
+      });
+      
+      return res.json({ permissionRequests });
+    }
+    
+    // Si es jefe de sector, solo puede ver solicitudes de su sector
+    if (req.userRole === 'MANAGER') {
+      // Si se especifica un sectorId, verificar que sea el sector que gestiona
+      if (sectorId) {
+        if (sectorId !== req.userManagedSectorId) {
+          return res.status(403).json({ 
+            error: 'No autorizado para ver solicitudes de otros sectores' 
+          });
+        }
+      } else {
+        // Si no se especifica sectorId, usar el que gestiona por defecto
+        // Aseguramos que el jefe tenga un sector asignado para gestionar
+        if (!req.userManagedSectorId) {
+          return res.status(403).json({ 
+            error: 'No tiene un sector asignado para gestionar' 
+          });
+        }
+      }
+      
+      // Aplicar el filtro para el sector que gestiona
+      const filter = {
+        sectorId: req.userManagedSectorId
+      };
+      
+      // Añadir filtros adicionales si se proporcionan
+      if (status) filter.status = status;
+      if (userId) filter.userId = userId;
+
+      const permissionRequests = await prisma.permissionRequest.findMany({
+        where: filter,
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            }
+          },
+          sector: {
+            select: {
+              id: true,
+              name: true,
+              manager: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true
+                }
+              }
+            }
+          },
+          type: {
+            select: {
+              id: true,
+              name: true,
+            }
+          },
+          attachments: true
+        },
+        orderBy: {
+          createdAt: 'desc'
+        }
+      });
+      
+      return res.json({ permissionRequests });
+    }
+    
+    // Para RRHH: pueden ver todas las solicitudes con filtros
+    // Construir el objeto de filtro dinámicamente
+    const filter = {};
+    
+    if (status) filter.status = status;
+    if (sectorId) filter.sectorId = sectorId;
+    if (userId) filter.userId = userId;
+
+    const permissionRequests = await prisma.permissionRequest.findMany({
+      where: filter,
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+
+    res.json({ permissionRequests });
+  } catch (error) {
+    console.error('Error al obtener solicitudes de permiso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// Obtener solicitudes de permiso para un usuario específico (empleado)
+export const getMyPermissionRequests = async (req, res) => {
+  try {
+    const userId = req.userId; // Obtenido del middleware de autenticación
+
+    const permissionRequests = await prisma.permissionRequest.findMany({
+      where: {
+        userId: userId
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+
+    res.json({ permissionRequests });
+  } catch (error) {
+    console.error('Error al obtener mis solicitudes de permiso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// Obtener solicitudes de permiso pendientes para un sector (jefe de sector)
+export const getPendingRequestsForSector = async (req, res) => {
+  try {
+    // Solo jefes de sector pueden acceder a esta información
+    if (req.userRole !== 'MANAGER' && req.userRole !== 'HR') {
+      return res.status(403).json({ error: 'No autorizado para ver solicitudes pendientes de sector' });
+    }
+
+    let sectorId = req.query.sectorId;
+    
+    // Si el usuario es jefe de sector, solo puede ver solicitudes de su propio sector
+    if (req.userRole === 'MANAGER' && req.userSectorId) {
+      sectorId = req.userSectorId;
+    } else if (!sectorId) {
+      return res.status(400).json({ error: 'Sector ID requerido para esta operación' });
+    }
+
+    const permissionRequests = await prisma.permissionRequest.findMany({
+      where: {
+        status: 'PENDING',
+        sectorId: sectorId
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      },
+      orderBy: {
+        createdAt: 'asc'
+      }
+    });
+
+    res.json({ permissionRequests });
+  } catch (error) {
+    console.error('Error al obtener solicitudes pendientes del sector:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// Obtener una solicitud de permiso específica
+export const getPermissionRequestById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const permissionRequest = await prisma.permissionRequest.findUnique({
+      where: { id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    if (!permissionRequest) {
+      return res.status(404).json({ error: 'Solicitud de permiso no encontrada' });
+    }
+
+    // Autorización: Solo el propietario, jefe del sector o RRHH pueden ver la solicitud
+    if (
+      req.userRole !== 'HR' && 
+      req.userRole !== 'MANAGER' && 
+      permissionRequest.userId !== req.userId
+    ) {
+      return res.status(403).json({ error: 'No autorizado para ver esta solicitud' });
+    }
+
+    // Si es jefe de sector, solo puede ver solicitudes de su sector
+    if (req.userRole === 'MANAGER') {
+      if (permissionRequest.sectorId !== req.userSectorId) {
+        return res.status(403).json({ error: 'No autorizado para ver solicitudes de otros sectores' });
+      }
+    }
+
+    res.json({ permissionRequest });
+  } catch (error) {
+    console.error('Error al obtener solicitud de permiso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// Crear una nueva solicitud de permiso (empleado)
+export const createPermissionRequest = async (req, res) => {
+  try {
+    const userId = req.userId; // Obtenido del middleware de autenticación
+    const { typeId, startDate, endDate, reason } = req.body;
+
+    // Validar campos requeridos
+    if (!typeId || !startDate || !endDate || !reason) {
+      return res.status(400).json({ error: 'Tipo de permiso, fechas y razón son requeridos' });
+    }
+
+    // Validar fechas
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    
+    if (start > end) {
+      return res.status(400).json({ error: 'La fecha de inicio debe ser anterior o igual a la fecha de fin' });
+    }
+
+    // Obtener el usuario para obtener su sector
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { 
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                email: true,
+                name: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!user || !user.sectorId) {
+      return res.status(400).json({ error: 'Usuario no tiene un sector asignado' });
+    }
+
+    // Crear la solicitud de permiso
+    const permissionRequest = await prisma.permissionRequest.create({
+      data: {
+        userId,
+        sectorId: user.sectorId,
+        typeId,
+        startDate: start,
+        endDate: end,
+        reason,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    // Enviar notificación por correo al empleado (sin detener el proceso si falla)
+    try {
+      await sendPermissionRequestCreatedNotification(
+        permissionRequest.user.email,
+        permissionRequest.user.name,
+        permissionRequest
+      );
+    } catch (emailError) {
+      console.error('Error al enviar notificación al empleado:', emailError);
+      // No detenemos el proceso por errores de correo
+    }
+
+    // Enviar notificación al jefe de sector si existe (sin detener el proceso si falla)
+    if (permissionRequest.sector.manager) {
+      try {
+        await sendManagerNotification(
+          permissionRequest.sector.manager.email,
+          permissionRequest.sector.manager.name,
+          permissionRequest
+        );
+      } catch (emailError) {
+        console.error('Error al enviar notificación al jefe de sector:', emailError);
+        // No detenemos el proceso por errores de correo
+      }
+    }
+
+    res.status(201).json({
+      message: 'Solicitud de permiso creada exitosamente',
+      permissionRequest,
+    });
+  } catch (error) {
+    console.error('Error al crear solicitud de permiso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// Crear una nueva solicitud de permiso con archivos adjuntos (empleado)
+export const createPermissionRequestWithAttachments = async (req, res) => {
+  try {
+    const userId = req.userId; // Obtenido del middleware de autenticación
+    const { typeId, startDate, endDate, reason, attachmentUrls } = req.body;
+
+    // Validar campos requeridos
+    if (!typeId || !startDate || !endDate || !reason) {
+      return res.status(400).json({ error: 'Tipo de permiso, fechas y razón son requeridos' });
+    }
+
+    // Validar fechas
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    
+    if (start > end) {
+      return res.status(400).json({ error: 'La fecha de inicio debe ser anterior o igual a la fecha de fin' });
+    }
+
+    // Obtener el usuario para obtener su sector
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { 
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                email: true,
+                name: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!user || !user.sectorId) {
+      return res.status(400).json({ error: 'Usuario no tiene un sector asignado' });
+    }
+
+    // Procesar URLs de adjuntos si existen
+    let attachmentData = [];
+    if (Array.isArray(attachmentUrls) && attachmentUrls.length > 0) {
+      // Extraer fileName de las URLs para que sea compatible con el sistema de adjuntos
+      attachmentData = attachmentUrls.map(url => {
+        // Extraer el nombre de archivo de la URL para usarlo como fileName
+        // Suponiendo que la URL tiene el formato: https://bucket.account.r2.cloudflarestorage.com/filename
+        try {
+          const parsedUrl = new URL(url);
+          const fileName = parsedUrl.pathname.split('/').pop(); // Extraer el último segmento
+          return {
+            fileName: fileName,
+            url: url
+          };
+        } catch (urlError) {
+          // Si hay un error al parsear la URL, usar el mismo valor como fileName
+          return {
+            fileName: url,
+            url: url
+          };
+        }
+      });
+    }
+
+    // Crear la solicitud de permiso con adjuntos
+    const permissionRequest = await prisma.permissionRequest.create({
+      data: {
+        userId,
+        sectorId: user.sectorId,
+        typeId,
+        startDate: start,
+        endDate: end,
+        reason,
+        attachments: {
+          create: attachmentData
+        }
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    // Enviar notificación por correo al empleado (sin detener el proceso si falla)
+    try {
+      await sendPermissionRequestCreatedNotification(
+        permissionRequest.user.email,
+        permissionRequest.user.name,
+        permissionRequest
+      );
+    } catch (emailError) {
+      console.error('Error al enviar notificación al empleado:', emailError);
+      // No detenemos el proceso por errores de correo
+    }
+
+    // Enviar notificación al jefe de sector si existe (sin detener el proceso si falla)
+    if (permissionRequest.sector.manager) {
+      try {
+        await sendManagerNotification(
+          permissionRequest.sector.manager.email,
+          permissionRequest.sector.manager.name,
+          permissionRequest
+        );
+      } catch (emailError) {
+        console.error('Error al enviar notificación al jefe de sector:', emailError);
+        // No detenemos el proceso por errores de correo
+      }
+    }
+
+    res.status(201).json({
+      message: 'Solicitud de permiso creada exitosamente',
+      permissionRequest,
+    });
+  } catch (error) {
+    console.error('Error al crear solicitud de permiso con adjuntos:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// Actualizar (modificar y aprobar) una solicitud de permiso (jefe de sector)
+export const updatePermissionRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { startDate, endDate, status, rejectionReason } = req.body;
+
+    // Verificar si la solicitud existe
+    const existingRequest = await prisma.permissionRequest.findUnique({
+      where: { id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    if (!existingRequest) {
+      return res.status(404).json({ error: 'Solicitud de permiso no encontrada' });
+    }
+
+    // Verificar autorización
+    if (req.userRole !== 'HR' && req.userRole !== 'MANAGER') {
+      return res.status(403).json({ error: 'No autorizado para modificar solicitudes' });
+    }
+
+    // Si es jefe de sector, solo puede modificar solicitudes de su sector
+    if (req.userRole === 'MANAGER' && existingRequest.sectorId !== req.userSectorId) {
+      return res.status(403).json({ error: 'No autorizado para modificar solicitudes de otros sectores' });
+    }
+
+    // Validar estado si se proporciona
+    if (status && !['PENDING', 'APPROVED', 'REJECTED'].includes(status)) {
+      return res.status(400).json({ error: 'Estado inválido' });
+    }
+
+    // Si se rechaza, se requiere una razón
+    if (status === 'REJECTED' && !rejectionReason) {
+      return res.status(400).json({ error: 'Razón de rechazo es requerida cuando se rechaza una solicitud' });
+    }
+
+    // Preparar los datos de actualización
+    const updateData = {};
+
+    // Si se proporcionan fechas, validarlas
+    if (startDate || endDate) {
+      const newStart = startDate ? new Date(startDate) : existingRequest.startDate;
+      const newEnd = endDate ? new Date(endDate) : existingRequest.endDate;
+      
+      if (newStart > newEnd) {
+        return res.status(400).json({ error: 'La fecha de inicio debe ser anterior o igual a la fecha de fin' });
+      }
+      
+      updateData.startDate = newStart;
+      updateData.endDate = newEnd;
+    }
+
+    // Actualizar estado y razón de rechazo si se proporcionan
+    if (status) {
+      updateData.status = status;
+    }
+    
+    if (rejectionReason) {
+      updateData.rejectionReason = rejectionReason;
+    }
+
+    const updatedRequest = await prisma.permissionRequest.update({
+      where: { id },
+      data: updateData,
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    // Enviar notificación por correo al empleado si cambió el estado
+    if (status) {
+      await sendPermissionRequestStatusNotification(
+        updatedRequest.user.email,
+        updatedRequest.user.name,
+        updatedRequest
+      );
+    }
+
+    res.json({
+      message: 'Solicitud de permiso actualizada exitosamente',
+      permissionRequest: updatedRequest,
+    });
+  } catch (error) {
+    console.error('Error al actualizar solicitud de permiso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// Aprobar una solicitud de permiso (jefe de sector)
+export const approvePermissionRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar si la solicitud existe
+    const existingRequest = await prisma.permissionRequest.findUnique({
+      where: { id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    if (!existingRequest) {
+      return res.status(404).json({ error: 'Solicitud de permiso no encontrada' });
+    }
+
+    // Verificar autorización
+    if (req.userRole !== 'HR' && req.userRole !== 'MANAGER') {
+      return res.status(403).json({ error: 'No autorizado para aprobar solicitudes' });
+    }
+
+    // Si es jefe de sector, solo puede aprobar solicitudes de su sector
+    if (req.userRole === 'MANAGER' && existingRequest.sectorId !== req.userSectorId) {
+      return res.status(403).json({ error: 'No autorizado para aprobar solicitudes de otros sectores' });
+    }
+
+    const updatedRequest = await prisma.permissionRequest.update({
+      where: { id },
+      data: { status: 'APPROVED' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    // Enviar notificación por correo al empleado
+    await sendPermissionRequestStatusNotification(
+      updatedRequest.user.email,
+      updatedRequest.user.name,
+      updatedRequest
+    );
+
+    // Enviar notificación al jefe del sector y RRHH
+    const hrUsers = await prisma.user.findMany({
+      where: { role: 'HR' },
+      select: {
+        email: true,
+        name: true
+      }
+    });
+
+    // Notificar al jefe del sector (si no es el mismo que está aprobando)
+    if (updatedRequest.sector.manager && req.userId !== updatedRequest.sector.manager.id) {
+      await sendManagerNotification(
+        updatedRequest.sector.manager.email,
+        updatedRequest.sector.manager.name,
+        updatedRequest
+      );
+    }
+
+    // Notificar a RRHH con información adicional sobre quién aprobó/rechazó
+    const approverDetails = {
+      id: req.userId,
+      name: req.user.name,
+      role: req.userRole,
+      email: req.userEmail
+    };
+    
+    for (const hrUser of hrUsers) {
+      await sendHRNotification(
+        hrUser.email,
+        hrUser.name,
+        updatedRequest,
+        approverDetails
+      );
+    }
+
+    res.json({
+      message: 'Solicitud de permiso aprobada exitosamente',
+      permissionRequest: updatedRequest,
+    });
+  } catch (error) {
+    console.error('Error al aprobar solicitud de permiso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// Rechazar una solicitud de permiso (jefe de sector)
+export const rejectPermissionRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rejectionReason } = req.body;
+
+    // Verificar si la solicitud existe
+    const existingRequest = await prisma.permissionRequest.findUnique({
+      where: { id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    if (!existingRequest) {
+      return res.status(404).json({ error: 'Solicitud de permiso no encontrada' });
+    }
+
+    // Verificar autorización
+    if (req.userRole !== 'HR' && req.userRole !== 'MANAGER') {
+      return res.status(403).json({ error: 'No autorizado para rechazar solicitudes' });
+    }
+
+    // Si es jefe de sector, solo puede rechazar solicitudes de su sector
+    if (req.userRole === 'MANAGER' && existingRequest.sectorId !== req.userSectorId) {
+      return res.status(403).json({ error: 'No autorizado para rechazar solicitudes de otros sectores' });
+    }
+
+    if (!rejectionReason) {
+      return res.status(400).json({ error: 'Razón de rechazo es requerida' });
+    }
+
+    const updatedRequest = await prisma.permissionRequest.update({
+      where: { id },
+      data: { 
+        status: 'REJECTED',
+        rejectionReason
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          }
+        },
+        sector: {
+          select: {
+            id: true,
+            name: true,
+            manager: {
+              select: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        },
+        type: {
+          select: {
+            id: true,
+            name: true,
+          }
+        },
+        attachments: true
+      }
+    });
+
+    // Enviar notificación por correo al empleado
+    await sendPermissionRequestStatusNotification(
+      updatedRequest.user.email,
+      updatedRequest.user.name,
+      updatedRequest
+    );
+
+    // Enviar notificación al jefe del sector y RRHH
+    const hrUsers = await prisma.user.findMany({
+      where: { role: 'HR' },
+      select: {
+        email: true,
+        name: true
+      }
+    });
+
+    // Notificar al jefe del sector (si no es el mismo que está rechazando)
+    if (updatedRequest.sector.manager && req.userId !== updatedRequest.sector.manager.id) {
+      await sendManagerNotification(
+        updatedRequest.sector.manager.email,
+        updatedRequest.sector.manager.name,
+        updatedRequest
+      );
+    }
+
+    // Notificar a RRHH con información adicional sobre quién rechazó
+    const approverDetails = {
+      id: req.userId,
+      name: req.user.name,
+      role: req.userRole,
+      email: req.userEmail
+    };
+    
+    for (const hrUser of hrUsers) {
+      await sendHRNotification(
+        hrUser.email,
+        hrUser.name,
+        updatedRequest,
+        approverDetails
+      );
+    }
+
+    res.json({
+      message: 'Solicitud de permiso rechazada exitosamente',
+      permissionRequest: updatedRequest,
+    });
+  } catch (error) {
+    console.error('Error al rechazar solicitud de permiso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};

@@ -1,0 +1,112 @@
+/* Estilos personalizados para SweetAlert2 */
+
+/* Botones principales */
+.swal2-confirm {
+  background-color: #ef4444 !important; /* Rojo para acciones de rechazo */
+  border-radius: 0.375rem !important;
+  padding: 0.5rem 1rem !important;
+  font-weight: 600 !important;
+  border: none !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1) !important;
+  transition: background-color 0.2s ease-in-out !important;
+}
+
+.swal2-confirm:hover {
+  background-color: #dc2626 !important; /* Rojo más oscuro al pasar el mouse */
+}
+
+.swal2-cancel {
+  background-color: #e5e7eb !important; /* Gris claro para cancelar */
+  color: #374151 !important;
+  border-radius: 0.375rem !important;
+  padding: 0.5rem 1rem !important;
+  font-weight: 600 !important;
+  border: none !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1) !important;
+  transition: background-color 0.2s ease-in-out !important;
+}
+
+.swal2-cancel:hover {
+  background-color: #d1d5db !important; /* Gris más oscuro al pasar el mouse */
+}
+
+/* Área de texto para razones de rechazo */
+.swal2-textarea {
+  border: 1px solid #d1d5db !important;
+  border-radius: 0.375rem !important;
+  padding: 0.5rem 0.75rem !important;
+  font-size: 0.875rem !important;
+  line-height: 1.25rem !important;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out !important;
+}
+
+.swal2-textarea:focus {
+  outline: none !important;
+  border-color: #3b82f6 !important; /* Azul para el foco */
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2) !important;
+}
+
+/* Títulos */
+.swal2-title {
+  font-size: 1.25rem !important;
+  font-weight: 600 !important;
+  color: #1f2937 !important;
+  line-height: 1.75rem !important;
+}
+
+/* Texto descriptivo */
+.swal2-content {
+  font-size: 0.875rem !important;
+  color: #6b7280 !important;
+  line-height: 1.25rem !important;
+}
+
+/* Iconos */
+.swal2-icon {
+  margin: 1rem auto 1.5rem !important;
+  width: 4rem !important;
+  height: 4rem !important;
+}
+
+.swal2-icon.swal2-question {
+  border-color: #3b82f6 !important;
+  color: #3b82f6 !important;
+}
+
+.swal2-icon.swal2-question::before {
+  content: "?" !important;
+  font-size: 2.5rem !important;
+}
+
+/* Footer */
+.swal2-footer {
+  border-top: 1px solid #e5e7eb !important;
+  margin-top: 1rem !important;
+  padding-top: 1rem !important;
+  font-size: 0.75rem !important;
+  color: #9ca3af !important;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .swal2-popup {
+    width: 90% !important;
+    max-width: none !important;
+    margin: 1rem auto !important;
+  }
+  
+  .swal2-title {
+    font-size: 1.125rem !important;
+  }
+  
+  .swal2-content {
+    font-size: 0.8125rem !important;
+  }
+  
+  .swal2-confirm,
+  .swal2-cancel {
+    padding: 0.375rem 0.75rem !important;
+    font-size: 0.8125rem !important;
+  }
+}

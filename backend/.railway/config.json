@@ -1,0 +1,18 @@
+# Archivo de configuración para Railway
+
+# Variables de entorno
+NODE_ENV=production
+PORT=3000
+JWT_SECRET=your_jwt_secret_here
+DATABASE_URL=postgresql://username:password@host:port/database_name
+BREVO_API_KEY=your_brevo_api_key_here
+CLOUDFLARE_R2_ACCESS_KEY_ID=your_r2_access_key_id
+CLOUDFLARE_R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
+CLOUDFLARE_R2_BUCKET_NAME=your_bucket_name
+CLOUDFLARE_R2_ACCOUNT_ID=your_account_id
+
+# Ignorar archivos
+.dockerignore
+.git
+README.md
+Dockerfile
